@@ -8,7 +8,6 @@
 <link rel="apple-touch-icon" href="icon.png">
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#0a0a0a">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   :root{
@@ -189,7 +188,8 @@
       </div>
       <div class="week-chart">
         <div class="stat-label">Habit Share</div>
-        <div class="chart-canvas-wrap"><canvas id="shareChart"></canvas></div>
+        <div class="chart-canvas-wrap" style="height:150px"><canvas id="shareChart"></canvas></div>
+        <div id="shareLegend"></div>
         <div id="shareEmpty" class="empty-squad" style="display:none;margin-top:10px">No completions logged yet this month.</div>
       </div>
     </div>
@@ -222,6 +222,12 @@
       <div id="habitEditor"></div>
       <button class="add-habit-btn" onclick="addHabitField()">+ Add Habit</button>
       <div><button class="save-btn" onclick="saveHabits()">Save Habits</button></div>
+    </div>
+    <div class="settings-card">
+      <div class="settings-lbl">Daily Reminder</div>
+      <div class="hint" style="margin-top:0;margin-bottom:14px">Get a notification if you haven't logged today's habits by this time. Only fires while this app is open in a tab or installed and running — closing it fully stops the check, since that needs a backend server this app doesn't have.</div>
+      <input type="time" id="reminderTime" class="ob-input" style="margin-bottom:10px" value="20:00" oninput="updateReminderTime()"/>
+      <button class="add-habit-btn" id="reminderToggleBtn" onclick="toggleReminder()">Enable reminder</button>
     </div>
     <div class="settings-card">
       <div class="settings-lbl">Backup & Restore</div>
@@ -286,7 +292,6 @@ const DEFAULT_HABITS=[
 
 let userName='', habits=[...DEFAULT_HABITS], checks={};
 let viewMonth=new Date().getMonth(), viewYear=new Date().getFullYear();
-let trendChartObj=null, shareChartObj=null;
 const CHART_PALETTE=['#e8e8e8','#c87a20','#5a8fc8','#7ac87a','#c85a7a','#a87ac8','#c8b45a','#5ac8b4','#c85a5a','#8a8a8a','#5ac85a','#c8905a'];
 function habitColor(h){
   let hash=0;for(let i=0;i<h.length;i++)hash=(hash*31+h.charCodeAt(i))>>>0;
@@ -327,7 +332,101 @@ function showApp(){
   document.getElementById('settingsName').textContent=userName;
   renderAll();
   syncProgress();
+  loadReminderSettings();
 }
+
+// ── Reminders (in-app notifications — only fire while this tab/app is open) ─
+let reminderCheckInterval=null;
+
+function loadReminderSettings(){
+  const saved=lsGet('ht_reminder_'+slug(userName));
+  const timeInput=document.getElementById('reminderTime');
+  const btn=document.getElementById('reminderToggleBtn');
+  if(saved&&saved.enabled){
+    timeInput.value=saved.time||'20:00';
+    btn.textContent='Disable reminder';
+    startReminderCheck();
+  }else{
+    btn.textContent='Enable reminder';
+  }
+}
+
+function toggleReminder(){
+  const saved=lsGet('ht_reminder_'+slug(userName))||{};
+  const btn=document.getElementById('reminderToggleBtn');
+  if(saved.enabled){
+    saved.enabled=false;
+    lsSet('ht_reminder_'+slug(userName),saved);
+    btn.textContent='Enable reminder';
+    stopReminderCheck();
+    showToast('Reminder disabled');
+    return;
+  }
+  if(!('Notification' in window)){
+    showToast('Notifications not supported on this browser');
+    return;
+  }
+  Notification.requestPermission().then(perm=>{
+    if(perm!=='granted'){showToast('Notification permission denied');return;}
+    const time=document.getElementById('reminderTime').value||'20:00';
+    lsSet('ht_reminder_'+slug(userName),{enabled:true,time,lastSent:null});
+    btn.textContent='Disable reminder';
+    startReminderCheck();
+    showToast('Reminder enabled ✓');
+  });
+}
+
+function updateReminderTime(){
+  const saved=lsGet('ht_reminder_'+slug(userName));
+  if(saved&&saved.enabled){
+    saved.time=document.getElementById('reminderTime').value;
+    saved.lastSent=null;
+    lsSet('ht_reminder_'+slug(userName),saved);
+  }
+}
+
+function startReminderCheck(){
+  stopReminderCheck();
+  reminderCheckInterval=setInterval(checkReminder,30000);
+  checkReminder();
+}
+function stopReminderCheck(){
+  if(reminderCheckInterval)clearInterval(reminderCheckInterval);
+  reminderCheckInterval=null;
+}
+
+function checkReminder(){
+  const saved=lsGet('ht_reminder_'+slug(userName));
+  if(!saved||!saved.enabled||Notification.permission!=='granted')return;
+  const now=new Date();
+  const nowTime=String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0');
+  const todayKey=now.toISOString().slice(0,10);
+  if(nowTime!==saved.time||saved.lastSent===todayKey)return;
+  const done=habits.filter(h=>checks[ck(now.getFullYear(),now.getMonth(),now.getDate(),h)]).length;
+  const remaining=habits.length-done;
+  if(remaining<=0)return;
+  new Notification('Habit Tracker',{
+    body:`${remaining} habit${remaining===1?'':'s'} left today. Don't break the streak.`,
+    icon:'icon.png'
+  });
+  saved.lastSent=todayKey;
+  lsSet('ht_reminder_'+slug(userName),saved);
+}
+
+// ── Offline support ──────────────────────────────────────────────────────
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>{
+    navigator.serviceWorker.register('sw.js').catch(()=>{});
+  });
+}
+window.addEventListener('online',()=>{
+  showToast('Back online — syncing ✓');
+  syncProgress();
+  if(document.getElementById('tab-squad').classList.contains('active'))renderSquad();
+});
+window.addEventListener('offline',()=>{
+  showToast('Offline — changes are saved locally');
+});
 
 // ── Navigation ────────────────────────────────────────────────────────────
 function switchTab(id,btn){
@@ -557,71 +656,125 @@ function renderProgress(){
   }
 }
 
-// ── Charts ────────────────────────────────────────────────────────────────
+// ── Charts (hand-drawn on canvas — no external library, works fully offline) ──
 function renderTrendChart(){
-  const t=new Date(),days=daysInMonth(viewYear,viewMonth);
-  const limit=(viewYear===t.getFullYear()&&viewMonth===t.getMonth())?t.getDate():days;
-  const labels=[],data=[];
-  for(let d=1;d<=limit;d++){labels.push(d);data.push(getDayPct(viewYear,viewMonth,d));}
-  const ctx=document.getElementById('trendChart');
-  if(!ctx)return;
-  if(trendChartObj)trendChartObj.destroy();
-  trendChartObj=new Chart(ctx,{
-    type:'line',
-    data:{labels,datasets:[{
-      data,
-      borderColor:'#e8e8e8',
-      backgroundColor:'rgba(232,232,232,0.08)',
-      fill:true,
-      tension:.3,
-      pointRadius:0,
-      pointHoverRadius:4,
-      pointBackgroundColor:'#e8e8e8',
-      borderWidth:2
-    }]},
-    options:{
-      responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{display:false},tooltip:{callbacks:{title:items=>'Day '+items[0].label,label:item=>item.parsed.y+'% completed'}}},
-      scales:{
-        x:{grid:{display:false},ticks:{color:'#3a3a3a',font:{size:9},maxTicksLimit:8}},
-        y:{min:0,max:100,grid:{color:'#161616'},ticks:{color:'#3a3a3a',font:{size:9},stepSize:25}}
-      }
-    }
+  const canvas=document.getElementById('trendChart');
+  const wrap=canvas.parentElement;
+  const dpr=window.devicePixelRatio||1;
+  const w=wrap.clientWidth,h=wrap.clientHeight;
+  if(!w||!h)return;
+  canvas.width=w*dpr;canvas.height=h*dpr;
+  canvas.style.width=w+'px';canvas.style.height=h+'px';
+  const ctx=canvas.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);
+
+  const t=new Date(),daysTotal=daysInMonth(viewYear,viewMonth);
+  const limit=(viewYear===t.getFullYear()&&viewMonth===t.getMonth())?t.getDate():daysTotal;
+  const data=[];
+  for(let d=1;d<=limit;d++)data.push(getDayPct(viewYear,viewMonth,d));
+
+  const padL=26,padR=6,padT=8,padB=16;
+  const plotW=w-padL-padR,plotH=h-padT-padB;
+
+  ctx.strokeStyle='#161616';ctx.lineWidth=1;ctx.font='9px Inter, sans-serif';ctx.fillStyle='#3a3a3a';ctx.textAlign='right';ctx.textBaseline='middle';
+  [0,25,50,75,100].forEach(v=>{
+    const y=padT+plotH-(v/100)*plotH;
+    ctx.beginPath();ctx.moveTo(padL,y);ctx.lineTo(w-padR,y);ctx.stroke();
+    ctx.fillText(v,padL-6,y);
+  });
+
+  if(data.length<2){
+    ctx.textAlign='center';ctx.fillStyle='#333';ctx.font='11px Inter, sans-serif';
+    ctx.fillText('Not enough data yet',w/2,h/2);
+    return;
+  }
+
+  const stepX=plotW/(data.length-1);
+  const pts=data.map((v,i)=>({x:padL+i*stepX,y:padT+plotH-(v/100)*plotH}));
+
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x,padT+plotH);
+  pts.forEach(p=>ctx.lineTo(p.x,p.y));
+  ctx.lineTo(pts[pts.length-1].x,padT+plotH);
+  ctx.closePath();
+  ctx.fillStyle='rgba(232,232,232,0.08)';
+  ctx.fill();
+
+  ctx.beginPath();
+  pts.forEach((p,i)=>i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y));
+  ctx.strokeStyle='#e8e8e8';ctx.lineWidth=2;ctx.lineJoin='round';ctx.stroke();
+
+  ctx.fillStyle='#3a3a3a';ctx.textAlign='center';ctx.textBaseline='top';
+  const labelEvery=Math.max(1,Math.ceil(data.length/7));
+  pts.forEach((p,i)=>{
+    if(i%labelEvery===0||i===pts.length-1)ctx.fillText(i+1,p.x,h-padB+4);
   });
 }
 
 function renderShareChart(){
   const counts=habits.map(h=>habitMonthCount(h));
   const total=counts.reduce((a,b)=>a+b,0);
-  const wrap=document.getElementById('shareChart').parentElement;
+  const canvas=document.getElementById('shareChart');
+  const wrap=canvas.parentElement;
   const empty=document.getElementById('shareEmpty');
+  const legend=document.getElementById('shareLegend');
   if(!total){
     wrap.style.display='none';empty.style.display='block';
-    if(shareChartObj){shareChartObj.destroy();shareChartObj=null;}
+    if(legend)legend.innerHTML='';
     return;
   }
   wrap.style.display='block';empty.style.display='none';
-  const ctx=document.getElementById('shareChart');
-  if(shareChartObj)shareChartObj.destroy();
-  shareChartObj=new Chart(ctx,{
-    type:'doughnut',
-    data:{
-      labels:habits,
-      datasets:[{data:counts,backgroundColor:habits.map(habitColor),borderColor:'#111',borderWidth:2}]
-    },
-    options:{
-      responsive:true,maintainAspectRatio:false,
-      cutout:'62%',
-      plugins:{
-        legend:{position:'bottom',labels:{color:'#888',font:{size:10},boxWidth:9,padding:8}},
-        tooltip:{callbacks:{label:item=>{
-          const pct=Math.round(item.parsed/total*100);
-          return `${item.label}: ${item.parsed} check-ins (${pct}%)`;
-        }}}
-      }
-    }
+
+  const dpr=window.devicePixelRatio||1;
+  const w=wrap.clientWidth,h=wrap.clientHeight;
+  if(!w||!h)return;
+  canvas.width=w*dpr;canvas.height=h*dpr;
+  canvas.style.width=w+'px';canvas.style.height=h+'px';
+  const ctx=canvas.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);
+
+  const cx=w/2,cy=h/2,outerR=Math.min(w,h)/2-4,innerR=outerR*.62;
+  let startAngle=-Math.PI/2;
+  habits.forEach((hab,i)=>{
+    const val=counts[i];
+    if(!val)return;
+    const angle=(val/total)*Math.PI*2;
+    ctx.beginPath();
+    ctx.moveTo(cx,cy);
+    ctx.arc(cx,cy,outerR,startAngle,startAngle+angle);
+    ctx.closePath();
+    ctx.fillStyle=habitColor(hab);
+    ctx.fill();
+    startAngle+=angle;
   });
+  ctx.globalCompositeOperation='destination-out';
+  ctx.beginPath();ctx.arc(cx,cy,innerR,0,Math.PI*2);ctx.fill();
+  ctx.globalCompositeOperation='source-over';
+
+  if(legend){
+    legend.innerHTML=habits.map((hab,i)=>{
+      if(!counts[i])return '';
+      const pct=Math.round(counts[i]/total*100);
+      return `<div style="display:flex;align-items:center;gap:7px;font-size:10px;color:#888;padding:3px 0">
+        <span style="width:8px;height:8px;border-radius:2px;background:${habitColor(hab)};flex-shrink:0"></span>
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${hab.replace(/</g,'&lt;')}</span>
+        <span style="color:#555">${counts[i]} · ${pct}%</span>
+      </div>`;
+    }).join('');
+  }
 }
+
+let chartResizeTimer=null;
+window.addEventListener('resize',()=>{
+  clearTimeout(chartResizeTimer);
+  chartResizeTimer=setTimeout(()=>{
+    if(document.getElementById('tab-progress').classList.contains('active')){
+      renderTrendChart();renderShareChart();
+    }
+  },150);
+});
 
 // ── Backup & Restore ─────────────────────────────────────────────────────
 function exportData(){
