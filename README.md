@@ -25,6 +25,8 @@ A personal habit-tracking app — single-file, no build step, works on GitHub Pa
 ## Offline use
 The service worker (`sw.js`) caches the app's own files (`index.html`, `manifest.json`, `icon.png`) the first time you load it, so it opens with no connection after that. Checking off habits and editing settings all work offline — they're saved to this browser's local storage. Squad sync (Supabase) needs a connection; if you're offline it just fails quietly and retries next time you're online, or you can tap the Refresh button on the Squad tab. When your connection comes back, the app auto-syncs and shows a toast.
 
+**Updating any cached file (especially `icon.png`)?** Bump the `CACHE_NAME` value at the top of `sw.js` (e.g. `habit-tracker-v1` → `habit-tracker-v2`) whenever you change `index.html`, `manifest.json`, or `icon.png`. The service worker only re-checks its cache when `sw.js`'s own contents change — swapping a same-named file on GitHub without bumping this will often look like "nothing changed" on your phone, since the old cached copy keeps getting served. If you'd already added the app to your home screen, the OS may have cached the icon separately at install time — remove it from the home screen and re-add it after the version bump if it still doesn't update.
+
 ## Daily reminder
 Settings → Daily Reminder lets you set a time; if any habits are still unchecked by then, you get a browser notification. This only works while the app is open in a tab, or installed as a PWA and running in the background — a fully closed browser/app won't fire it, since real background push notifications need a server component this static site doesn't have.
 
