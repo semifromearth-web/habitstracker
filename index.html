@@ -228,6 +228,7 @@
       <div class="hint" style="margin-top:0;margin-bottom:14px">Get a notification if you haven't logged today's habits by this time. Only fires while this app is open in a tab or installed and running — closing it fully stops the check, since that needs a backend server this app doesn't have.</div>
       <input type="time" id="reminderTime" class="ob-input" style="margin-bottom:10px" value="20:00" oninput="updateReminderTime()"/>
       <button class="add-habit-btn" id="reminderToggleBtn" onclick="toggleReminder()">Enable reminder</button>
+      <button class="add-habit-btn" style="margin-top:8px" onclick="testReminderNotification()">Send test notification</button>
     </div>
     <div class="settings-card">
       <div class="settings-lbl">Backup & Restore</div>
@@ -395,6 +396,18 @@ function stopReminderCheck(){
   reminderCheckInterval=null;
 }
 
+// Android Chrome rejects `new Notification()` from page scripts entirely
+// (throws, silently, no popup) — it requires going through the service
+// worker instead. This works everywhere the constructor would have.
+function fireNotification(title, options){
+  if('serviceWorker' in navigator && navigator.serviceWorker.controller){
+    navigator.serviceWorker.ready.then(reg=>reg.showNotification(title, options))
+      .catch(()=>{ try{ new Notification(title, options); }catch(e){} });
+  }else{
+    try{ new Notification(title, options); }catch(e){}
+  }
+}
+
 function checkReminder(){
   const saved=lsGet('ht_reminder_'+slug(userName));
   if(!saved||!saved.enabled||Notification.permission!=='granted')return;
@@ -405,12 +418,25 @@ function checkReminder(){
   const done=habits.filter(h=>checks[ck(now.getFullYear(),now.getMonth(),now.getDate(),h)]).length;
   const remaining=habits.length-done;
   if(remaining<=0)return;
-  new Notification('Habit Tracker',{
+  fireNotification('Habit Tracker',{
     body:`${remaining} habit${remaining===1?'':'s'} left today. Don't break the streak.`,
     icon:'icon.png'
   });
   saved.lastSent=todayKey;
   lsSet('ht_reminder_'+slug(userName),saved);
+}
+
+function testReminderNotification(){
+  if(!('Notification' in window)){showToast('Notifications not supported on this browser');return;}
+  if(Notification.permission!=='granted'){
+    Notification.requestPermission().then(perm=>{
+      if(perm==='granted')testReminderNotification();
+      else showToast('Notification permission denied');
+    });
+    return;
+  }
+  fireNotification('Habit Tracker',{body:'Test notification — if you see this, it works ✓',icon:'icon.png'});
+  showToast('Test sent');
 }
 
 // ── Offline support ──────────────────────────────────────────────────────
