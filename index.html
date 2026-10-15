@@ -231,6 +231,12 @@
       <button class="add-habit-btn" style="margin-top:8px" onclick="testReminderNotification()">Send test notification</button>
     </div>
     <div class="settings-card">
+      <div class="settings-lbl">Life Dashboard</div>
+      <input id="dashTok" type="password" placeholder="Paste your owner token" autocomplete="off" style="width:100%;padding:10px;margin-bottom:8px;border-radius:10px;border:1px solid #2a2a2a;background:#111;color:inherit">
+      <button class="add-habit-btn" onclick="saveDashToken()">Save token &amp; sync</button>
+      <button class="add-habit-btn" onclick="dashSync(true)">Sync now</button>
+    </div>
+    <div class="settings-card">
       <div class="settings-lbl">Backup & Restore</div>
       <div class="hint" style="margin-top:0;margin-bottom:14px">Your data lives only in this browser. Export a backup regularly, or move it to another device.</div>
       <button class="add-habit-btn" onclick="exportData()">↓ Export backup (.json)</button>
@@ -306,7 +312,7 @@ const slug=s=>s.toLowerCase().replace(/\s+/g,'_');
 // ── Boot ──────────────────────────────────────────────────────────────────
 window.onload=()=>{
   const saved=lsGet('ht_user');
-  if(saved){userName=saved;loadUser();showApp();}
+  if(saved){userName=saved;loadUser();showApp();dashSoon();}
   document.getElementById('nameInput').addEventListener('keydown',e=>{if(e.key==='Enter')startTracking();});
 };
 
@@ -448,6 +454,7 @@ if('serviceWorker' in navigator){
 window.addEventListener('online',()=>{
   showToast('Back online — syncing ✓');
   syncProgress();
+  dashSoon();
   if(document.getElementById('tab-squad').classList.contains('active'))renderSquad();
 });
 window.addEventListener('offline',()=>{
@@ -564,6 +571,28 @@ function toggleCheck(d,h){
   lsSet('ht_checks_'+slug(userName),checks);
   renderAll();
   syncProgress();
+  dashSoon();
+}
+
+// ── Life Dashboard sync ──
+const DASH_URL='https://bkxwezpdfjevrxwtwjwq.supabase.co';
+const DASH_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJreHdlenBkZmpldnJ4d3R3andxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIwMDY3OTAsImV4cCI6MjEwNzU4Mjc5MH0.82cNhr0VEvHp4ojOEHScFzgq-I-8VKg45vGGNcx9Jtw';
+let dashT;const dashSoon=()=>{clearTimeout(dashT);dashT=setTimeout(()=>dashSync(false),3000)};
+function saveDashToken(){const i=document.getElementById('dashTok'),v=i.value.trim();if(!v)return;lsSet('ht_dash_token',v);i.value='';showToast('Token saved');dashSync(true)}
+async function dashSync(manual){
+  const tok=lsGet('ht_dash_token');
+  if(!tok){if(manual)showToast('Add your dashboard token first');return}
+  if(!navigator.onLine){if(manual)showToast('Offline - will sync when back online');return}
+  const now=new Date(),pad=n=>String(n).padStart(2,'0'),days=new Set(lsGet('ht_dash_days')||[]);
+  const today=`${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;days.add(today);
+  Object.keys(checks).forEach(k=>{const[y,m,d]=k.split(':');days.add(`${y}-${pad(+m+1)}-${pad(d)}`)});
+  const rows=new Map();
+  days.forEach(day=>{const[y,m,d]=day.split('-').map(Number);habits.forEach(h=>rows.set(day+'|'+h,{day,habit:h,done:!!checks[ck(y,m-1,d,h)]}))});
+  try{
+    const r=await fetch(DASH_URL+'/rest/v1/habit_logs?on_conflict=day,habit',{method:'POST',headers:{apikey:DASH_KEY,Authorization:'Bearer '+DASH_KEY,'x-owner-token':tok,'Content-Type':'application/json',Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify([...rows.values()])});
+    if(!r.ok)throw new Error(r.status);
+    lsSet('ht_dash_days',[...days]);if(manual)showToast('Synced to dashboard');
+  }catch(e){if(manual)showToast('Sync failed ('+e.message+')')}
 }
 
 async function syncProgress(){
